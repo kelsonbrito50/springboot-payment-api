@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payment Service</title>
+<style>
+	:root {
+		--bg: #f7f7f8;
+		--panel: #ffffff;
+		--border: #e3e3e6;
+		--text: #1c1c1e;
+		--muted: #6b6b73;
+		--accent: #2f6feb;
+		--pending: #8a6d1f;
+		--pending-bg: #fdf3d4;
+		--completed: #1c6b3f;
+		--completed-bg: #dcf3e5;
+		--failed: #9a2c2c;
+		--failed-bg: #fbdcdc;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root {
+			--bg: #17171a;
+			--panel: #202024;
+			--border: #33333a;
+			--text: #ececf0;
+			--muted: #9a9aa4;
+			--accent: #6f9dff;
+			--pending: #e8c86a;
+			--pending-bg: #3b3216;
+			--completed: #7ddba6;
+			--completed-bg: #14361f;
+			--failed: #f09a9a;
+			--failed-bg: #3c1a1a;
+		}
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0;
+		padding: 2rem 1rem;
+		background: var(--bg);
+		color: var(--text);
+		font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+	}
+	main { max-width: 760px; margin: 0 auto; }
+	h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+	.sub { color: var(--muted); margin: 0 0 2rem; font-size: .9rem; }
+	section {
+		background: var(--panel);
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		padding: 1.25rem;
+		margin-bottom: 1.5rem;
+	}
+	h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
+	     color: var(--muted); margin: 0 0 1rem; }
+	form { display: flex; gap: .75rem; flex-wrap: wrap; align-items: flex-end; }
+	label { display: flex; flex-direction: column; gap: .3rem; font-size: .8rem; color: var(--muted); }
+	input, select, button {
+		font: inherit; padding: .5rem .65rem; border-radius: 7px;
+		border: 1px solid var(--border); background: var(--bg); color: var(--text);
+	}
+	input { width: 150px; }
+	button {
+		background: var(--accent); color: #fff; border-color: transparent;
+		cursor: pointer; font-weight: 500;
+	}
+	button:hover { filter: brightness(1.08); }
+	button.ghost { background: transparent; color: var(--accent); border-color: var(--border); }
+	table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+	th {
+		text-align: left; font-size: .72rem; text-transform: uppercase;
+		letter-spacing: .05em; color: var(--muted); padding-bottom: .6rem;
+		border-bottom: 1px solid var(--border);
+	}
+	td { padding: .7rem 0; border-bottom: 1px solid var(--border); vertical-align: middle; }
+	tr:last-child td { border-bottom: none; }
+	code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .82em; color: var(--muted); }
+	.badge {
+		display: inline-block; padding: .18rem .55rem; border-radius: 999px;
+		font-size: .72rem; font-weight: 600; letter-spacing: .03em;
+	}
+	.PENDING { color: var(--pending); background: var(--pending-bg); }
+	.COMPLETED { color: var(--completed); background: var(--completed-bg); }
+	.FAILED { color: var(--failed); background: var(--failed-bg); }
+	.actions { display: flex; gap: .4rem; justify-content: flex-end; }
+	.actions button { padding: .3rem .6rem; font-size: .78rem; }
+	#message { margin-top: .9rem; font-size: .85rem; min-height: 1.2em; }
+	#message.error { color: var(--failed); }
+	#message.ok { color: var(--completed); }
+	.empty { color: var(--muted); font-style: italic; padding: 1rem 0; }
+</style>
+</head>
+<body>
+<main>
+	<h1>Payment Service</h1>
+	<p class="sub">Spring Boot demo &middot; in-memory store, resets when the app restarts</p>
+
+	<section>
+		<h2>Create a payment</h2>
+		<form id="create-form">
+			<label>Amount
+				<input type="number" id="amount" step="0.01" min="0.01" value="19.99" required>
+			</label>
+			<label>Currency
+				<select id="currency">
+					<option>USD</option>
+					<option>EUR</option>
+					<option>GBP</option>
+					<option>BRL</option>
+					<option>JPY</option>
+				</select>
+			</label>
+			<button type="submit">Create</button>
+		</form>
+		<div id="message"></div>
+	</section>
+
+	<section>
+		<h2>Payments</h2>
+		<table>
+			<thead>
+				<tr><th>ID</th><th>Amount</th><th>Status</th><th></th></tr>
+			</thead>
+			<tbody id="rows"></tbody>
+		</table>
+		<div id="empty" class="empty" hidden>No payments yet — create one above.</div>
+	</section>
+</main>
+
+<script>
+	const api = '/api/payments';
+	const rows = document.getElementById('rows');
+	const empty = document.getElementById('empty');
+	const message = document.getElementById('message');
+
+	function say(text, kind) {
+		message.textContent = text;
+		message.className = kind || '';
+	}
+
+	// The API reports failures as RFC 9457 problem+json, so surface `detail`.
+	async function send(url, options) {
+		const response = await fetch(url, options);
+		const body = response.status === 204 ? null : await response.json();
+		if (!response.ok) {
+			throw new Error(body && body.detail ? body.detail : 'Request failed');
+		}
+		return body;
+	}
+
+	async function refresh() {
+		const payments = await send(api);
+		rows.replaceChildren();
+		empty.hidden = payments.length > 0;
+
+		for (const payment of payments) {
+			const tr = document.createElement('tr');
+
+			const id = document.createElement('td');
+			const code = document.createElement('code');
+			code.textContent = payment.id.slice(0, 8);
+			id.append(code);
+
+			const amount = document.createElement('td');
+			amount.textContent = payment.amount + ' ' + payment.currency;
+
+			const status = document.createElement('td');
+			const badge = document.createElement('span');
+			badge.className = 'badge ' + payment.status;
+			badge.textContent = payment.status;
+			status.append(badge);
+
+			const actions = document.createElement('td');
+			if (payment.status === 'PENDING') {
+				const wrap = document.createElement('div');
+				wrap.className = 'actions';
+				wrap.append(
+					action('Complete', () => transition(payment.id, 'complete')),
+					action('Fail', () => transition(payment.id, 'fail'))
+				);
+				actions.append(wrap);
+			}
+
+			tr.append(id, amount, status, actions);
+			rows.append(tr);
+		}
+	}
+
+	function action(label, handler) {
+		const button = document.createElement('button');
+		button.className = 'ghost';
+		button.textContent = label;
+		button.addEventListener('click', handler);
+		return button;
+	}
+
+	async function transition(id, verb) {
+		try {
+			const updated = await send(api + '/' + id + '/' + verb, { method: 'POST' });
+			say('Payment ' + id.slice(0, 8) + ' is now ' + updated.status, 'ok');
+			await refresh();
+		} catch (error) {
+			say(error.message, 'error');
+		}
+	}
+
+	document.getElementById('create-form').addEventListener('submit', async (event) => {
+		event.preventDefault();
+		try {
+			const created = await send(api, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					amount: document.getElementById('amount').value,
+					currency: document.getElementById('currency').value
+				})
+			});
+			say('Created payment ' + created.id.slice(0, 8), 'ok');
+			await refresh();
+		} catch (error) {
+			say(error.message, 'error');
+		}
+	});
+
+	refresh().catch((error) => say(error.message, 'error'));
+</script>
+</body>
+</html>
