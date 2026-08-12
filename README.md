@@ -1,4 +1,4 @@
-# Payment Service — Spring Boot Demo
+# Payment Service — Spring Boot
 
 A small Spring Boot application built to explore layered architecture,
 dependency injection, and testing at the right level. It models a payment
