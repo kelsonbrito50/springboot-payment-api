@@ -13,6 +13,56 @@ Maven · JUnit 5 · Mockito · Testcontainers · AssertJ
 
 ---
 
+## Architecture
+
+Each layer depends only on the interface below it, so the arrows also show what
+a change is allowed to touch. Note which type crosses each boundary: the
+immutable `Payment` record travels up to the controller, while `PaymentEntity`
+never leaves the `dao` package.
+
+```mermaid
+flowchart TB
+    client([HTTP client, or the bundled browser page])
+
+    subgraph web["web"]
+        controller["PaymentController<br/>CreatePaymentRequest<br/>GlobalExceptionHandler"]
+    end
+
+    subgraph services["services"]
+        api["PaymentService<br/>interface"]
+        impl["PaymentServiceImpl<br/>validation, state transitions"]
+    end
+
+    subgraph dao["dao"]
+        port["PaymentDAO<br/>persistence boundary"]
+        adapter["JpaPaymentDAO<br/>with PaymentMapper"]
+        repo["PaymentJpaRepository<br/>Spring Data, package-private"]
+    end
+
+    db[("PostgreSQL 16<br/>schema owned by Flyway")]
+
+    client -- "JSON over REST" --> controller
+    controller -- "Payment" --> api
+    impl -. "implements" .-> api
+    impl -- "Payment" --> port
+    adapter -. "implements" .-> port
+    adapter -- "PaymentEntity" --> repo
+    repo -- "SQL" --> db
+```
+
+A payment moves through a three state lifecycle. The service rejects any
+transition out of a terminal state with a `409`, which is the rule
+`PaymentServiceImplTest` covers most heavily.
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING: POST /api/payments
+    PENDING --> COMPLETED: complete endpoint
+    PENDING --> FAILED: fail endpoint
+    COMPLETED --> [*]
+    FAILED --> [*]
+```
+
 ## Running it
 
 Requires JDK 17+ and Docker. The Maven wrapper is included.
