@@ -2,7 +2,7 @@
 
 A small Spring Boot application built to explore layered architecture,
 dependency injection, and testing at the right level. It models a payment
-through a simple lifecycle — created, then either completed or failed — with
+through a simple lifecycle created, then either completed or failed with
 business rules in the service layer, storage behind an interface, and a REST
 API on top.
 
