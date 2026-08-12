@@ -1,7 +1,9 @@
 CREATE TABLE payments (
     id       UUID          PRIMARY KEY,
     amount   NUMERIC(19, 2) NOT NULL CHECK (amount > 0),
-    currency CHAR(3)        NOT NULL,
+    -- VARCHAR rather than CHAR: Postgres bpchar space-pads to the declared
+    -- width, which would corrupt comparisons on the currency code.
+    currency VARCHAR(3)     NOT NULL,
     status   VARCHAR(16)    NOT NULL
 );
 
