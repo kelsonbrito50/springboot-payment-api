@@ -1,27 +1,30 @@
 # Payment Service — Spring Boot
 
-A small Spring Boot application built to explore layered architecture,
-dependency injection, and testing at the right level. It models a payment
-through a simple lifecycle created, then either completed or failed with
-business rules in the service layer, storage behind an interface, and a REST
-API on top.
+[![CI](https://github.com/kelsonbrito50/springboot-payment-api/actions/workflows/ci.yml/badge.svg)](https://github.com/kelsonbrito50/springboot-payment-api/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-**Stack:** Java 17 · Spring Boot 4.1.0 · Maven · JUnit 5 · Mockito · AssertJ
+A Spring Boot service built to explore layered architecture, dependency
+injection, and testing at the right level. It models a payment through a simple
+lifecycle created, then either completed or failed, with business rules in the
+service layer, PostgreSQL behind a repository interface, and a REST API on top.
+
+**Stack:** Java 17 · Spring Boot 4.1 · PostgreSQL 16 · Spring Data JPA · Flyway ·
+Maven · JUnit 5 · Mockito · Testcontainers · AssertJ
 
 ---
 
 ## Running it
 
-Requires JDK 17 or newer. The Maven wrapper is included, so no local Maven
-install is needed.
+Requires JDK 17+ and Docker. The Maven wrapper is included.
 
 ```bash
-./mvnw test              # run the test suite
-./mvnw spring-boot:run   # start the server on http://localhost:8080
+docker compose up -d      # start PostgreSQL
+./mvnw spring-boot:run    # start the API on http://localhost:8080
 ```
 
-Then open **http://localhost:8080** for a small page that creates payments and
-walks them through their lifecycle, or use the API directly:
+Flyway creates the schema on first start. Open **http://localhost:8080** for a
+small page that creates payments and walks them through their lifecycle, or use
+the API directly:
 
 ```bash
 curl -X POST http://localhost:8080/api/payments \
@@ -29,19 +32,24 @@ curl -X POST http://localhost:8080/api/payments \
   -d '{"amount": 19.99, "currency": "USD"}'
 ```
 
-There is also a console walkthrough with no web layer involved:
+There is also a console walkthrough that exercises the same service:
 
 ```bash
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=demo
 ```
 
-Storage is in-memory, so data resets on restart.
+Tests need Docker running but not the compose stack, because Testcontainers
+starts its own database:
+
+```bash
+./mvnw verify             # tests + coverage report in target/site/jacoco
+```
 
 ## API
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/payments` | Create a payment — `201` with a `Location` header |
+| `POST` | `/api/payments` | Create a payment, `201` with a `Location` header |
 | `GET` | `/api/payments` | List all payments |
 | `GET` | `/api/payments/{id}` | Fetch one payment |
 | `POST` | `/api/payments/{id}/complete` | `PENDING` → `COMPLETED` |
@@ -59,8 +67,8 @@ Errors come back as RFC 9457 `application/problem+json`:
 {
   "title": "Invalid state transition",
   "status": 409,
-  "detail": "Payment 2171e7c6… is already COMPLETED and cannot become COMPLETED",
-  "instance": "/api/payments/2171e7c6…/complete"
+  "detail": "Payment 2171e7c6 is already COMPLETED and cannot become COMPLETED",
+  "instance": "/api/payments/2171e7c6/complete"
 }
 ```
 
@@ -71,11 +79,14 @@ src/main/java/com/bharath/core/
 ├── CoreApplication.java              entry point
 ├── DemoRunner.java                   console walkthrough, @Profile("demo")
 ├── model/
-│   ├── Payment.java                  immutable record
+│   ├── Payment.java                  immutable domain record
 │   └── PaymentStatus.java            PENDING → COMPLETED | FAILED
 ├── dao/
 │   ├── PaymentDAO.java               persistence boundary
-│   └── InMemoryPaymentDAO.java       ConcurrentHashMap implementation
+│   ├── JpaPaymentDAO.java            the only class that knows persistence is JPA
+│   ├── PaymentJpaRepository.java     Spring Data, package-private
+│   ├── PaymentEntity.java            mutable table representation
+│   └── PaymentMapper.java            entity to domain translation
 ├── services/
 │   ├── PaymentService.java           business operations
 │   ├── PaymentServiceImpl.java       validation and state transitions
@@ -83,68 +94,90 @@ src/main/java/com/bharath/core/
 └── web/
     ├── PaymentController.java        REST endpoints
     ├── CreatePaymentRequest.java     request DTO with Bean Validation
-    └── GlobalExceptionHandler.java   exception → status code mapping
+    └── GlobalExceptionHandler.java   exception to status code mapping
 
-src/main/resources/static/index.html  browser UI, no build step
+src/main/resources/
+├── db/migration/V1__create_payments_table.sql
+└── static/index.html                 browser UI, no build step
 ```
 
 ## Design notes
 
-**Constructor injection over field injection.** `PaymentServiceImpl` takes its
-`PaymentDAO` as a constructor argument. The field is `final`, the object is
-never observed half-built, and the class can be instantiated directly in a test
-with a mock — no Spring context required.
+**The domain model and the table are separate types.** `Payment` is an immutable
+record using `Currency` and a status enum. `PaymentEntity` is a mutable class
+because JPA requires a no-arg constructor and field access, and `PaymentMapper`
+translates between them. Annotating the domain record with `@Entity` would force
+the domain to bend around persistence, and records cannot be entities anyway.
 
-**The service depends on the interface, not the implementation.** `InMemoryPaymentDAO`
-is a `ConcurrentHashMap` because persistence isn't what this project is about. A
-JDBC or JPA implementation drops into the same slot without the service layer
-changing, which is the practical argument for the indirection rather than just
-the theoretical one.
+**Only `JpaPaymentDAO` knows persistence is JPA.** `PaymentJpaRepository` is
+package-private, so the service layer depends on the `PaymentDAO` interface and
+nothing else. Swapping the implementation would not touch a line of business
+logic.
 
-**`Payment` is an immutable record.** State changes return a new instance via
-`withStatus`, so a payment can be shared across threads without defensive
-copying. The terminal-state guard lives on the model, where a caller can't
-forget to check it.
+**Flyway owns the schema; Hibernate validates against it.** `ddl-auto=validate`
+means an entity that has drifted from the migrations fails at startup rather
+than at the first query. Letting Hibernate generate the schema would make the
+migrations decorative. This caught a real mismatch during development: the
+migration declared `CHAR(3)` while the entity mapped `varchar(3)`.
+
+**`open-in-view` is disabled.** The default leaves the persistence context open
+for the whole request, which hides N+1 queries behind lazy loading in the view
+layer. Off, they surface during development.
+
+**Constructor injection over field injection.** The dependency is `final`, the
+object is never observed half-built, and the class can be instantiated directly
+in a test with a mock, needing no Spring context.
 
 **Validation is duplicated on purpose.** Bean Validation rejects malformed
-requests at the HTTP edge with a useful message; the service re-checks the same
-rules so it stays correct when called from anywhere else — as `DemoRunner` does.
+requests at the HTTP edge with a useful message, and the service re-checks the
+same rules so it stays correct when called from anywhere else, as `DemoRunner`
+does.
 
-**Controllers hold no business logic.** `PaymentController` translates requests
-into service calls; `GlobalExceptionHandler` maps domain exceptions onto status
-codes. Neither branches on business state.
+**A malformed id is a miss, not a crash.** `GET /api/payments/banana` returns
+404 rather than 500, because `JpaPaymentDAO` treats an unparseable UUID as
+"not found".
 
-**Currency is `java.util.Currency`, not `String`.** Validated once at the
-boundary; past that point an invalid currency code is unrepresentable.
-
-**Amounts are `BigDecimal`.** Binary floating point can't represent most decimal
-fractions exactly, which is the wrong tradeoff for money.
+**Amounts are `BigDecimal`, stored as `NUMERIC(19,2)`.** Binary floating point
+cannot represent most decimal fractions exactly, which is the wrong tradeoff for
+money.
 
 ## Tests
 
-25 tests across four classes:
+29 tests across four classes, layered so each runs at the cheapest level that
+can still catch its failure:
 
-| Class | Scope |
-| --- | --- |
-| `PaymentServiceImplTest` | Business rules, DAO mocked — no Spring context |
-| `InMemoryPaymentDAOTest` | Store behaviour, plain unit tests |
-| `PaymentControllerTest` | `@WebMvcTest` slice — routing, JSON, validation, status codes |
-| `CoreApplicationTests` | `@SpringBootTest` — the context starts and beans wire together |
+| Class | Scope | Needs Docker |
+| --- | --- | --- |
+| `PaymentServiceImplTest` | Business rules, DAO mocked, no Spring context | no |
+| `PaymentControllerTest` | `@WebMvcTest` slice: routing, JSON, validation, status codes | no |
+| `JpaPaymentDAOTest` | Real Postgres via Testcontainers: schema, mapping, round trips | yes |
+| `CoreApplicationTests` | Full context against a real database | yes |
 
-The split is deliberate: rules run in milliseconds without a container, the web
-slice loads only MVC, and the full-context test covers only what genuinely needs
-a full context.
+The database tests run against PostgreSQL 16 with the Flyway migrations applied,
+not an embedded substitute. H2 would happily accept a schema that Postgres
+rejects, which defeats the purpose of testing the mapping at all.
 
 ```
-Tests run: 25, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 29, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
+JaCoCo reports **75% instruction / 88% branch** coverage to
+`target/site/jacoco/index.html`. The business classes sit between 88% and 100%.
+The overall figure is held down by `DemoRunner`, which only runs under the
+`demo` profile, and by `CoreApplication.main`.
+
 ## Notes
 
-Two Boot 4 details worth knowing if you're reading the `pom.xml`:
+Boot 4 modularized heavily, which is worth knowing if you are reading the
+`pom.xml`:
 
 - Test slices moved out of `spring-boot-test-autoconfigure` into per-technology
-  modules, so `@WebMvcTest` needs `spring-boot-webmvc-test` on the test classpath.
-- Mockito is passed to Surefire as a `-javaagent` rather than self-attaching at
-  runtime, which the JDK warns about today and will disallow later.
+  modules, so `@WebMvcTest` needs `spring-boot-webmvc-test` and `@DataJpaTest`
+  needs `spring-boot-data-jpa-test`.
+- Flyway's auto-configuration moved to `spring-boot-flyway`. Without that
+  module, `flyway-core` sits on the classpath but never runs.
+- Testcontainers versions are no longer managed, so its BOM is imported
+  explicitly. Version 2.x is required to talk to Docker Engine 29.
+- Surefire's `argLine` starts with `@{argLine}` to carry JaCoCo's agent through.
+  Omitting it silently produces a zero-coverage report.
