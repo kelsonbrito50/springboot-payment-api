@@ -68,6 +68,7 @@ stateDiagram-v2
 Requires JDK 17+ and Docker. The Maven wrapper is included.
 
 ```bash
+cp .env.example .env      # then set a local password in .env
 docker compose up -d      # start PostgreSQL
 ./mvnw spring-boot:run    # start the API on http://localhost:8080
 ```

@@ -5,7 +5,8 @@ services:
     environment:
       POSTGRES_DB: payments
       POSTGRES_USER: payments
-      POSTGRES_PASSWORD: payments
+      # Read from .env (copy .env.example); compose refuses to start without it.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (copy .env.example)}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
